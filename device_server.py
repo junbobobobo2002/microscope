@@ -209,8 +209,6 @@ def _check_autoproxy_feature() -> None:
 
 def _register_device(pyro_daemon, device, obj_id=None) -> None:
     uri = pyro_daemon.register(device, obj_id)
-    print("uri is {0}".format(uri))
-    print(device)
     if isinstance(device, microscope.abc.Controller):
         _check_autoproxy_feature()
         for sub_device in device.devices.values():
@@ -328,7 +326,6 @@ class DeviceServer(multiprocessing.Process):
 
         pyro_daemon = Pyro4.Daemon(port=port, host=host)
         #----------------------------------------------------------------------------------------------------
-        print(pyro_daemon)
 
         log_handler = RotatingFileHandler(
             "%s_%s_%s.log" % (cls_name, host, port)
@@ -451,7 +448,6 @@ def serve_devices(devices, exit_event=None):
                 )
             )
             servers[-1].start()
-            print(dev, uid_to_host, uid_to_port)
             count += 1
 
     # Main thread must be idle to process signals correctly, so use another

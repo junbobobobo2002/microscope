@@ -132,14 +132,12 @@ class pcoPandaCamera(
             #return None
         try:
             #self.myCam.record(number_of_images=1, mode='sequence')
-            #print("FETCHING DATA FROM PCO HANDLER")
             if (not self.newInBuffer):
                 raise Exception
             else:
                 self.newInBuffer = False
             
             image, metadata = self.myCam.image()
-            print(image)
             
         except Exception as e:
             return None
@@ -181,7 +179,6 @@ class pcoPandaCamera(
         """
         #At the moment I do not see any reason to use other modes
         #Maybe we can consider taking multiple images
-        print("In do Trigger")
         self.myCam.record(number_of_images=1, mode='sequence')
         self.newInBuffer = True
         #raise NotImplementedError()

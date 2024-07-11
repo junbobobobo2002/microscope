@@ -592,7 +592,6 @@ class DataDevice(Device, metaclass=abc.ABCMeta):
         device specific code in `_do_enable`.
 
         """
-        print("Enable called")
         _logger.debug("Enabling ...")
         # Call device-specific code.
         try:
@@ -611,7 +610,7 @@ class DataDevice(Device, metaclass=abc.ABCMeta):
                     self._fetch_thread_run = False
             else:
                 if not self._fetch_thread or not self._fetch_thread.is_alive():
-                    print("Calling fetch loop")
+                    # print("Calling fetch loop")
                     self._fetch_thread = Thread(target=self._fetch_loop)
                     self._fetch_thread.daemon = True
                     self._fetch_thread.start()
@@ -711,7 +710,7 @@ class DataDevice(Device, metaclass=abc.ABCMeta):
 
         while self._fetch_thread_run:
             try:
-                print("calling fetch data from fetch loop")
+                # print("calling fetch data from fetch loop")
                 data = self._fetch_data()
             except Exception as e:
                 _logger.error("in _fetch_loop:", exc_info=e)
