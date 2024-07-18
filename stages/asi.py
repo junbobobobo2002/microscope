@@ -24,22 +24,27 @@ import logging
 import typing
 
 import serial
+import threading
 
 import microscope._utils
+import microscope
 import abc
+import time
 
 _logger = logging.getLogger(__name__)
 
 class SerialConnection:
-
     def __init__(self, 
                  which_port,
-                 name) -> None:
+                 name,
+                 verbose=True) -> None:
         
         # set variables used for the Serial connection
         self.name = name
-
-        print('%s: Opening...'%name, end='')
+        self.verbose = verbose
+        self.lock = threading.Lock()
+        
+        if self.verbose: print('%s: Opening...'%name, end='')
         try:
             # construct the serial connection
             self.port = serial.Serial(
@@ -47,65 +52,81 @@ class SerialConnection:
         except serial.serialutil.SerialException:
             # raise an error if not able to connect
             raise IOError('%s: No connection on port %s'%(name, which_port))
-        print(" done.")
+        if self.verbose: print(" done.")
         self.version = self._send('V').strip(':A \r\n')
         assert self.version == 'Version: USB-9.2n', (
             '%s: controller version not supported'%name)
 
     def _set_ttl_in_mode(self, mode):
-        print("%s: setting ttl in mode = %s"%(self.name, mode))
+        if self.verbose: print("%s: setting ttl in mode = %s"%(self.name, mode))
         mode2code = {'disabled':'0', 'toggle_ttl_out':'10'}
         assert mode in mode2code, "mode '%s' not allowed"%mode
         self._ttl_in_mode = self._send(
             'TTL X=%s'%mode2code[mode], respond=False)
-        assert self._get_ttl_in_mode() == mode
-        print("%s: -> done setting ttl in mode."%self.name)
+        assert self._get_ttl_in_mode() == mode, 'set ttl in mode failed'
+        if self.verbose: print("%s: -> done setting ttl in mode."%self.name)
         return None
 
     def _set_ttl_out_mode(self, mode):
-        print("%s: setting ttl out mode = %s"%(self.name, mode))
+        if self.verbose: print("%s: setting ttl out mode = %s"%(self.name, mode))
         mode2code = {'low':'0', 'high':'1', 'pwm':'9'}
         assert mode in mode2code, "mode '%s' not allowed"%mode
         self._ttl_out_mode = self._send(
             'TTL Y=%s'%mode2code[mode], respond=False)
-        assert self._get_ttl_out_mode() == mode
-        print("%s: -> done setting ttl out mode."%self.name)
+        assert self._get_ttl_out_mode() == mode, 'set ttl out mode failed'
+        if self.verbose: print("%s: -> done setting ttl out mode."%self.name)
         return None
     
     def _get_ttl_in_mode(self):
-        print("%s: getting ttl in mode"%self.name)
+        if self.verbose: print("%s: getting ttl in mode"%self.name)
         code2mode = {'0': 'disabled', '10': 'toggle_ttl_out'}
         code = self._send('TTL X?').rstrip().split('=')[1]
         self._ttl_in_mode = code2mode[code]
-        print("%s: -> ttl in mode = %s"%(self.name, self._ttl_in_mode))
+        if self.verbose: print("%s: -> ttl in mode = %s"%(self.name, self._ttl_in_mode))
         return self._ttl_in_mode
 
     def _get_ttl_out_mode(self):
-        print("%s: getting ttl out mode"%self.name)
+        if self.verbose: print("%s: getting ttl out mode"%self.name)
         code2mode = {'0': 'low', '1': 'high', '9': 'pwm'}
         code = self._send('TTL Y?').rstrip().split('=')[1]
         self._ttl_out_mode = code2mode[code]
-        print("%s: -> ttl out mode = %s"%(self.name, self._ttl_out_mode))
+        if self.verbose: print("%s: -> ttl out mode = %s"%(self.name, self._ttl_out_mode))
         return self._ttl_out_mode
 
-    def _send(self, cmd, respond=True, parse_axes=False):
-        print("%s: sending cmd = "%self.name, cmd)
-        assert type(cmd) is str, 'command should be a string'
-        cmd = bytes(cmd, encoding='ascii')
-        self.port.write(cmd + b'\r')
-        response = self.port.readline().decode('ascii').strip(':A \r\n')
-        if respond:
-            assert response != '', '%s: No response'%self.name
-        else:
-            response = None
-        print("%s: -> response = "%self.name, response)
-        assert self.port.in_waiting == 0
+    def _clear_buffer(self):
+        if self.port.in_waiting > 0:
+            self.port.read(self.port.in_waiting)
+        if self.verbose:
+            print(f"{self.name}: Buffer cleared")
+
+    def _send(self, cmd, respond=True, parse_axes=False, where=False):
+        # For Multi-Threaded Cockpit
+        with self.lock:
+            print("%s: sending cmd = "%self.name, cmd)
+            assert type(cmd) is str, 'command should be a string'
+            cmd = bytes(cmd, encoding='ascii')
+            if where:
+                while True:
+                    self.port.write(cmd + b'\r')
+                    response = ''.join(c for c in (self.port.readline().decode('ascii')) if ord(c)>31)
+                    if response.startswith(':A'):
+                        break
+                    else: 
+                        print(f'ERROR reponse is {response}\nEND of error response')
+                        time.sleep(0.01)
+            else:
+                self.port.write(cmd + b'\r')
+                response = self.port.readline().decode('ascii')
+                response = response.strip(':A \r\n')
+            if respond:
+                assert response != '', '%s: No response'%self.name
+            else:
+                response = None
+            print("%s: -> response = "%self.name, response)
+            assert self.port.in_waiting == 0
         return response
 
-
-
 class ASIStageAxis(microscope.abc.StageAxis):
-
     def __init__(self, 
                  name, 
                  real_name,
@@ -148,10 +169,10 @@ class ASIStageAxis(microscope.abc.StageAxis):
         print("%s: setting velocity = %s"%(self.real_name, velocity_mmps))
         #assert len(velocity_mmps) == len(self.axes)
         #for v in velocity_mmps: assert type(v) is int or type(v) is float
-        assert type(velocity_mmps) is int or type(velocity_mmps) is float
+        assert type(velocity_mmps) is int or type(velocity_mmps) is float, 'invalid set velocity type'
         cmd_string = ['S ']
 
-        assert 0 <= velocity_mmps <= self.max_velocity_mmps
+        assert 0 <= velocity_mmps <= self.max_velocity_mmps, 'invalid set velocity'
         velocity_mmps = round(velocity_mmps, 6)
         cmd_string.append('V%s=%0.6f '%(self.real_name, velocity_mmps))
 
@@ -160,7 +181,7 @@ class ASIStageAxis(microscope.abc.StageAxis):
         #print(tuple(velocity_mmps))
         print(velocity_mmps)
         #assert self._get_velocity() == tuple(velocity_mmps)
-        assert self._get_velocity() == velocity_mmps
+        assert self._get_velocity() == velocity_mmps, 'set velocity failed'
         print("%s: -> done setting velocity."%self.real_name)
         return None
 
@@ -176,11 +197,11 @@ class ASIStageAxis(microscope.abc.StageAxis):
         print("%s: setting acceleration = %s"%(self.real_name, acceleration_ms))
         #assert len(acceleration_ms) == len(self.axes)
         #for v in acceleration_ms: assert type(v) is int or type(v) is float
-        assert type(acceleration_ms) is int or type(acceleration_ms) is float
+        assert type(acceleration_ms) is int or type(acceleration_ms) is float, 'invalid acceleration type'
         cmd_string = ['AC ']
         acceleration_ms = round(acceleration_ms)
-        assert acceleration_ms >= self.min_acceleration_ms
-        assert acceleration_ms <= self.max_acceleration_ms
+        assert acceleration_ms >= self.min_acceleration_ms, 'set acceleration out of bound'
+        assert acceleration_ms <= self.max_acceleration_ms, 'set acceleration out of bound'
         cmd_string.append('AC%s=%0.6f '%(self.real_name, acceleration_ms))
 
         self.serial_connection._send(''.join(cmd_string), respond=False)
@@ -200,17 +221,17 @@ class ASIStageAxis(microscope.abc.StageAxis):
         print("%s: setting settle time = %s"%(self.real_name, settle_time_ms))
         #assert len(settle_time_ms) == len(self.axes)
         #for v in settle_time_ms: assert type(v) is int or type(v) is float
-        assert type(settle_time_ms) is int or type(settle_time_ms) is float
+        assert type(settle_time_ms) is int or type(settle_time_ms) is float, 'invalid settle time type'
         cmd_string = ['WT ']
         settle_time_ms = round(settle_time_ms)
-        assert 0 <= settle_time_ms <= self.max_settle_time_ms
+        assert 0 <= settle_time_ms <= self.max_settle_time_ms, 'invalid settle time'
         cmd_string.append('WT%s=%0.6f '%(self.real_name, settle_time_ms))
 
         self.serial_connection._send(''.join(cmd_string), respond=False)
         self._get_settle_time()
         self.settle_time_ms = float(self.settle_time_ms)
-        assert self.settle_time_ms >= settle_time_ms - self.tol_settle_time_ms
-        assert settle_time_ms <= settle_time_ms + self.tol_settle_time_ms
+        assert self.settle_time_ms >= settle_time_ms - self.tol_settle_time_ms, 'error in setting settle time'
+        assert settle_time_ms <= settle_time_ms + self.tol_settle_time_ms, 'error in setting settle time'
         print("%s: -> done setting settle_time."%self.real_name)
         return None
 
@@ -227,16 +248,16 @@ class ASIStageAxis(microscope.abc.StageAxis):
         print("%s: setting precision = %s"%(self.real_name, precision_um))
         #assert len(precision_um) == len(self.axes)
         #for v in precision_um: assert type(v) is int or type(v) is float
-        assert type(precision_um) is int or type(precision_um) is float
+        assert type(precision_um) is int or type(precision_um) is float, 'invalid precision type'
         cmd_string = ['PC ']
 
         precision_um = round(precision_um)
-        assert precision_um >= self.min_precision_um
-        assert precision_um <= self.max_precision_um
+        assert precision_um >= self.min_precision_um, 'precision out of bound'
+        assert precision_um <= self.max_precision_um, 'precision out of bound'
         cmd_string.append(
                 'PC%s=%0.6f '%(self.real_name, 1e-6 * precision_um))
         self.serial_connection._send(''.join(cmd_string), respond=False)
-        assert self._get_precision() == precision_um
+        assert self._get_precision() == precision_um , 'set precision failed'
         print("%s: -> done setting precision."%self.real_name)
         return None
 
@@ -252,17 +273,17 @@ class ASIStageAxis(microscope.abc.StageAxis):
         return self.precision_um
 
     def _counts2position(self, count):
+        # print(f'In _counts2position: count={count}; encover_counts_per_um={self.encoder_counts_per_um}')
         position_um = float(count[0]) / self.encoder_counts_per_um
         return position_um
 
     def _position2counts(self, position_um):
-
         count = round(position_um * self.encoder_counts_per_um)
         return count
 
     def _get_position(self):
         print("%s: getting position"%self.real_name)
-        response = self.serial_connection._send('W '+' '.join(self.real_name)).strip(':A \r\n').split()
+        response = self.serial_connection._send('W '+' '.join(self.real_name), where=True).strip(':A \r\n').split()
         self.position_um = self._counts2position(response)
         print("%s: -> position (um) = %f"%(self.real_name, self.position_um))
         return self.position_um
@@ -274,26 +295,24 @@ class ASIStageAxis(microscope.abc.StageAxis):
             status = self.serial_connection._send('/')
             if status == 'N':
                 break
+        self.serial_connection._clear_buffer()
+ 
         self._get_position()
-        print("FIRST")
-        assert self.position_um >= self._target_move_um - self.precision_um
-        print("SECOND")
-        assert self.position_um <= self._target_move_um + self.precision_um
+        assert self.position_um >= self._target_move_um - self.precision_um, 'axis position out of precision'
+        assert self.position_um <= self._target_move_um + self.precision_um, 'axis position out of precision'
         self._moving = False
         print('%s: -> finished moving'%self.real_name)
         return None
     
     def move_um(self, move_um, relative=True, block=True):
         self._finish_moving()
-        print(type(move_um))
-        assert type(move_um) is int or type(move_um) is float or move_um is None
-        print("hey from asi")
+        assert type(move_um) is int or type(move_um) is float or move_um is None, 'axis move type invalid'
         if move_um is None:
             move_um = self.position_um
         if move_um is not None and relative:
             move_um = self.position_um + move_um
-        assert move_um >= self.lower_limit
-        assert move_um <= self.upper_limit
+        assert move_um >= self.lower_limit, 'axis move out of bound'
+        assert move_um <= self.upper_limit, 'axis move out of bound'
 
         #move_um = tuple(round(v, 3) for v in move_um) # round to nm
         move_um = round(move_um, 3)
@@ -357,34 +376,30 @@ class ASIStage(
                  verbose=True,              # False for max speed
                  very_verbose=False,
                  index: typing.Optional[int] = None) -> None:
-        
             self.enabled = False
             self._settings: typing.Dict[str, microscope.abc._Setting] = {}
             self._index = index
 
             # set variables used for the Serial connection
             self.name = name
-            print("setting verbose")
             self.verbose = verbose
-            print("after setting verbose")
             self.very_verbose = very_verbose
 
-
             # the stage has a serial connection
-            self.serial_connection = SerialConnection(which_port, name)
+            self.serial_connection = SerialConnection(which_port, name, verbose=self.verbose)
             self.serial_connection._set_ttl_in_mode('disabled')
             self.serial_connection._set_ttl_out_mode('low')
             
             # pmw state
-            self.state = None
+            self.state = 'off'
             
             if axes is not None:
                 # check that the name and number of axes are correct
-                assert axes == ('X','Y') or axes == ('Z',) or axes == ('X','Y','Z')
+                assert axes == ('X','Y') or axes == ('Z',) or axes == ('X','Y','Z'), 'invalid axis configuration'
 
                 # check lead screw values 
                 assert lead_screws is not None, 'please choose lead screw options'
-                assert len(lead_screws) == len(axes)
+                assert len(lead_screws) == len(axes), 'lead screws and axis number unmatches'
                 screw2value = { # pitch (mm), res (nm), speed (mm/s)
                     'UC':(25.40, 88.0, 28.0),   # 'ultra-course'
                     'SC':(12.70, 44.0, 14.0),   # 'super-course'
@@ -406,16 +421,16 @@ class ASIStage(
                 assert axes_min_mm is not None, 'please specify min range of axes'
                 assert axes_max_mm is not None, 'please specify max range of axes'
                 # check if there is one mix/max value for each axis
-                assert len(axes_min_mm) == len(axes)
-                assert len(axes_max_mm) == len(axes)
+                assert len(axes_min_mm) == len(axes), 'axis limits and axis number unmatches'
+                assert len(axes_max_mm) == len(axes), 'axis limits and axis number unmatches'
                 # check that the min/max values of axes are int or float
-                for v in axes_min_mm: assert type(v) is int or type(v) is float
-                for v in axes_max_mm: assert type(v) is int or type(v) is float
+                for v in axes_min_mm: assert type(v) is int or type(v) is float, 'bad axis limit type'
+                for v in axes_max_mm: assert type(v) is int or type(v) is float, 'bad axis limit type'
 
                 self.encoder_counts_per_um = len(axes)*(10,)# default value
                 if encoder_counts_per_um is not None:
-                    assert len(encoder_counts_per_um) == len(axes)
-                    for v in encoder_counts_per_um: assert type(v) is int
+                    assert len(encoder_counts_per_um) == len(axes), 'encoder and axis number unmatches'
+                    for v in encoder_counts_per_um: assert type(v) is int, 'invalid encoder counts per um type'
                     self.encoder_counts_per_um = encoder_counts_per_um
 
                 axes_temp = []
@@ -482,7 +497,7 @@ class ASIStage(
         of `shutdown`.
 
         """
-        if self.verbose: print("%s: closing..."%self.name)
+        if self.verbose: print("%s: closing..." % self.name)
         if self.state != 'off':
             self.set_pwm_state('off')
         self.serial_connection.port.close()
@@ -506,13 +521,13 @@ class ASIStage(
         if self.verbose:
             print("%s: setting pwm intensity = %s"%(self.name, intensity))
         
-        assert type(intensity) is int or type(intensity) is float
+        assert type(intensity) is int or type(intensity) is float, 'invalid intensity type'
         intensity = int(intensity)
         
         #assert 1 <= intensity <= 99
-        assert 0 <= intensity <= 99
+        assert 0 <= intensity <= 99, 'invalid intensity value'
         self.serial_connection._send('LED X=%d :NA'%intensity, respond=False)
-        assert self.get_pwm_intensity() == intensity
+        assert self.get_pwm_intensity() == intensity, 'set pwm intensity failed'
         if self.verbose:
             print("%s: -> done setting pwm intensity."%self.name)
         return None
@@ -520,7 +535,7 @@ class ASIStage(
     def set_pwm_state(self, state):
         if self.verbose:
             print("%s: setting pwm state = %s"%(self.name, state))
-        assert state in ('off', 'on', 'pwm', 'external')
+        assert state in ('off', 'on', 'pwm', 'external'), 'Invalid pwm state name'
         if state == 'off':
             self.serial_connection._set_ttl_in_mode('disabled')
             self.serial_connection._set_ttl_out_mode('low')

@@ -14,6 +14,8 @@ import os
 
 import Pyro4
 
+import microscope.abc
+
 
 #microscope.abc.FloatingDeviceMixin,
 class pcoPandaCamera(
@@ -22,12 +24,12 @@ class pcoPandaCamera(
     def __init__(self, index=0, **kwargs):
         super().__init__(index=index, **kwargs)
         self.myCam = pco.Camera()
+        self.roi = microscope.ROI(None, None, None, None)
         self.initialize()
         #will need to init those two later after the first capture
         self.imageBuffer = None
         self.imageMetaData = None
         self.cycleTime = 0.0
-        self.roi = microscope.ROI(None, None, None, None)
         self.binning = microscope.Binning(1, 1)
         self.newInBuffer = True
         
@@ -106,7 +108,7 @@ class pcoPandaCamera(
             TRIGGER_BEFORE or
             TRIGGER_DURATION (bulb exposure.)
         """
-        pass
+        return microscope.abc.TRIGGER_SOFT
     
     def abort(self) -> None:
         """Stop acquisition as soon as possible."""
@@ -227,7 +229,6 @@ class pcoPandaCamera(
         #We create the object in init and then call initialize to set default configuration
         #pco.Camera().configurations are stored in a dictionary
         self.myCam.default_configuration()
-
         self.roi = microscope.ROI(
             left=1,
             top=1,

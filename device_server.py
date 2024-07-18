@@ -457,7 +457,7 @@ def serve_devices(devices, exit_event=None):
         """Keep DeviceServers alive."""
         while not exit_event.is_set():
             for s in servers:
-                print(s)
+                # print(s)
                 if s.is_alive():           
                     continue
                 else:
